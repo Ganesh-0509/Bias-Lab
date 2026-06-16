@@ -1,6 +1,6 @@
-"""Gemini-powered narrative report generator.
+"""LLM-powered narrative report generator.
 
-Requires the GEMINI_API_KEY environment variable to be set.
+Uses the multi-provider LLM client (Gemini → Bytez → OpenRouter → Ollama).
 Endpoint returns an English-readable summary of fairness audit results.
 """
 
@@ -12,6 +12,8 @@ from typing import Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel
+
+from core.llm_client import generate, get_model
 
 router = APIRouter(prefix="/narrative", tags=["narrative"])
 
@@ -87,7 +89,7 @@ In one short plain-English paragraph, cover whichever of these the facts support
 
 
 class ExplainBatchRequest(BaseModel):
-    """Many already-computed metrics to explain in ONE Gemini call (pre-fetch on analysis)."""
+    """Many already-computed metrics to explain in ONE LLM call (pre-fetch on analysis)."""
 
     items: list[ExplainMetricRequest]
 
@@ -134,93 +136,53 @@ Example format:
 {{"some_metric_id": {{"plain_summary": "...", "technical_meaning": "...", "current_value_interpretation": "...", "affected_groups": "...", "risk_reason": "...", "recommended_review": "..."}}, ...}}"""
 
 
-def _generate_with_gemini(api_key: str, prompt: str, *, as_json: bool = False) -> str:
-    from google import genai
-    from google.genai import types
-
-    client = genai.Client(api_key=api_key)
-    # gemini-2.5-flash has free-tier quota; gemini-2.0-flash returns limit:0 on free keys.
-    config = types.GenerateContentConfig(response_mime_type="application/json") if as_json else None
-    response = client.models.generate_content(
-        model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-        contents=prompt,
-        config=config,
-    )
-    return response.text
-
-
-def _safe_generate(prompt: str, *, key_missing_msg: str) -> dict[str, str]:
-    """Run a prompt through Gemini with graceful degradation. The explanation is a bonus
-    layer — if the key/package/quota isn't there, return a clear status, never an exception."""
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        return {"explanation": key_missing_msg, "status": "api_key_missing"}
+def _safe_generate(prompt: str) -> dict[str, str]:
+    """Run a prompt through the LLM client with graceful degradation. The explanation is a bonus
+    layer — if no provider is reachable, return a clear status, never an exception."""
     try:
-        return {"explanation": _generate_with_gemini(api_key, prompt), "status": "ok"}
+        return {"explanation": generate(prompt), "status": "ok"}
     except ImportError:
         return {
-            "explanation": "AI explanations need the google-genai package. Run: pip install google-genai",
+            "explanation": "AI explanations need the openai package. Run: pip install openai",
             "status": "import_error",
         }
     except Exception as exc:
-        error_str = str(exc)
-        if "429" in error_str or "quota" in error_str.lower():
-            return {
-                "explanation": "The AI explanation service is rate-limited right now. Please wait a minute and try again.",
-                "status": "rate_limited",
-            }
-        return {"explanation": f"AI explanation error: {error_str}", "status": "error"}
+        return {"explanation": f"AI explanation error: {exc}", "status": "error"}
 
 
 @router.post("/explain-metric")
 async def explain_metric(req: ExplainMetricRequest) -> dict[str, str]:
     """Explain ONE already-computed metric in plain English. The value and supporting facts
     come from the deterministic pipeline — the LLM only narrates them, it never decides bias."""
-    result = _safe_generate(
-        _build_metric_prompt(req),
-        key_missing_msg=(
-            "Plain-English AI explanations need a Gemini API key. Set GEMINI_API_KEY on the "
-            "server (free key at https://aistudio.google.com/apikey) to enable them."
-        ),
-    )
+    result = _safe_generate(_build_metric_prompt(req))
     result["metric"] = req.metric
     return result
 
 
 @router.post("/explain-batch")
 async def explain_batch(req: ExplainBatchRequest) -> dict[str, Any]:
-    """Explain MANY metrics in a single Gemini call. Returns structured explanation objects
+    """Explain MANY metrics in a single LLM call. Returns structured explanation objects
     keyed by metric id. The frontend pre-fetches this once after analysis so each
     'Explain this' click is an instant cache read, not a new API call."""
     if not req.items:
         return {"explanations": {}, "status": "ok"}
 
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        return {"explanations": {}, "status": "api_key_missing"}
-
     try:
-        raw = _generate_with_gemini(api_key, _build_batch_prompt(req.items), as_json=True)
+        raw = generate(_build_batch_prompt(req.items), as_json=True)
         data = json.loads(raw)
-        # Accept both legacy string values and new structured dict values
         explanations: dict[str, Any] = {}
         for k, v in data.items():
             if isinstance(v, dict):
-                # New structured format: {plain_summary, technical_meaning, ...}
                 explanations[str(k)] = v
             elif isinstance(v, (str, int, float)):
-                # Legacy plain-string format — wrap in a minimal structure
                 explanations[str(k)] = {"plain_summary": str(v)}
         return {"explanations": explanations, "status": "ok"}
     except ImportError:
         return {"explanations": {}, "status": "import_error"}
     except json.JSONDecodeError:
-        # Model returned non-JSON; clients fall back to lazy per-metric calls.
         return {"explanations": {}, "status": "parse_error"}
-    except Exception as exc:
-        error_str = str(exc)
-        status = "rate_limited" if ("429" in error_str or "quota" in error_str.lower()) else "error"
-        return {"explanations": {}, "status": status}
+    except Exception:
+        return {"explanations": {}, "status": "error"}
 
 
 
@@ -229,20 +191,8 @@ async def generate_narrative(payload: dict[str, Any]):
     results = payload.get("results", {})
     prompt = _build_prompt(results)
 
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        return {
-            "narrative": (
-                "Executive summary generation requires a Gemini API key. "
-                "Set the GEMINI_API_KEY environment variable and try again.\n\n"
-                "To get a key, visit: https://aistudio.google.com/apikey"
-            ),
-            "prompt": prompt,
-            "status": "api_key_missing",
-        }
-
     try:
-        narrative = _generate_with_gemini(api_key, prompt)
+        narrative = generate(prompt)
         return {
             "narrative": narrative,
             "prompt": prompt,
@@ -250,20 +200,13 @@ async def generate_narrative(payload: dict[str, Any]):
         }
     except ImportError:
         return {
-            "narrative": "The google-genai package is not installed. Run: pip install google-genai",
+            "narrative": "The openai package is not installed. Run: pip install openai",
             "prompt": prompt,
             "status": "import_error",
         }
     except Exception as exc:
-        error_str = str(exc)
-        if "429" in error_str or "quota" in error_str.lower():
-            return {
-                "narrative": "Gemini API rate limit exceeded. The free tier quota has been used up for this API key. Please wait about 1 minute and try again, or use a different API key.",
-                "prompt": prompt,
-                "status": "rate_limited",
-            }
         return {
-            "narrative": f"Gemini API error: {error_str}",
+            "narrative": f"LLM error: {exc}",
             "prompt": prompt,
             "status": "error",
         }
@@ -278,10 +221,6 @@ class ExplainMitigationRequest(BaseModel):
 
 @router.post("/explain-mitigation")
 async def explain_mitigation(req: ExplainMitigationRequest) -> dict[str, Any]:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        return {"mitigation_results": {}, "status": "api_key_missing"}
-
     prompt = f"""You are a fairness analyst reviewing a sandbox mitigation experiment.
 The user excluded some records to mitigate bias. Compare the original vs. mitigated results and explain the outcome.
 
@@ -304,11 +243,8 @@ Return ONLY a valid JSON object with EXACTLY this structure:
 }}"""
 
     try:
-        raw = _generate_with_gemini(api_key, prompt, as_json=True)
+        raw = generate(prompt, as_json=True)
         data = json.loads(raw)
         return {"mitigation_results": data, "status": "ok"}
-    except Exception as exc:
-        error_str = str(exc)
-        status = "rate_limited" if ("429" in error_str or "quota" in error_str.lower()) else "error"
-        return {"mitigation_results": {}, "status": status}
-
+    except Exception:
+        return {"mitigation_results": {}, "status": "error"}

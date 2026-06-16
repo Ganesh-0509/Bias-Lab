@@ -1,4 +1,4 @@
-"""Tests for newly added modules: dataset_loader, colab, gemini_narrative."""
+"""Tests for newly added modules: dataset_loader, colab, llm_narrative."""
 
 from __future__ import annotations
 
@@ -74,9 +74,9 @@ class TestColabExport:
         assert len(notebook["cells"]) > 3
 
 
-class TestGeminiNarrative:
+class TestLLMNarrative:
     def test_build_prompt_includes_scores(self):
-        from routers.gemini_narrative import _build_prompt
+        from routers.llm_narrative import _build_prompt
 
         results = {
             "fairness_score": 72,
@@ -101,7 +101,7 @@ class TestGeminiNarrative:
         assert "Data Bias" in prompt
 
     def test_build_prompt_empty_recommendations(self):
-        from routers.gemini_narrative import _build_prompt
+        from routers.llm_narrative import _build_prompt
 
         results = {
             "fairness_score": 95,
@@ -115,8 +115,8 @@ class TestGeminiNarrative:
         assert "No specific recommendations" in prompt
 
     def test_endpoint_no_key_returns_friendly_message(self):
-        from routers.gemini_narrative import generate_narrative
+        from routers.llm_narrative import generate_narrative
         import asyncio
 
         resp = asyncio.run(generate_narrative({"results": {}}))
-        assert resp["status"] in ("api_key_missing", "import_error", "rate_limited", "error")
+        assert resp["status"] in ("import_error", "ollama_unreachable", "error")

@@ -18,7 +18,7 @@ httpx
 python-dotenv
 imbalanced-learn>=0.12
 requests
-google-genai>=1.0
+openai>=1.0
 PyJWT>=2.8
 cryptography
 firebase-admin>=6.5

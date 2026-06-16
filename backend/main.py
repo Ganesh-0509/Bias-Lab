@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse  # noqa: E402
 
 from core.firebase_auth import get_current_user  # noqa: E402
 from core.firestore_db import get_client  # noqa: E402
-from routers import audit, bias, colab, datasets, fixes, gemini_narrative, monitoring, pipeline, sandbox, project, chat, pattern_review, mitigate, user  # noqa: E402
+from routers import audit, bias, colab, datasets, fixes, llm_narrative, monitoring, pipeline, sandbox, project, chat, pattern_review, mitigate, user  # noqa: E402
 
 app = FastAPI(title="Unbiased AI Decision Platform")
 
@@ -63,7 +63,7 @@ app.include_router(fixes.router, prefix="/api", dependencies=_auth)
 app.include_router(sandbox.router, prefix="/api", dependencies=_auth)
 app.include_router(monitoring.router, prefix="/api", dependencies=_auth)
 app.include_router(colab.router, prefix="/api", dependencies=_auth)
-app.include_router(gemini_narrative.router, prefix="/api", dependencies=_auth)
+app.include_router(llm_narrative.router, prefix="/api", dependencies=_auth)
 app.include_router(chat.router, prefix="/api", dependencies=_auth)
 app.include_router(pattern_review.router, prefix="/api", dependencies=_auth)
 app.include_router(mitigate.router, prefix="/api")  # auth declared per-endpoint
